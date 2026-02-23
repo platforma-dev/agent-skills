@@ -1,0 +1,4 @@
+interface:
+  display_name: "Platforma Guidelines"
+  short_description: "Platforma backend framework operator guide"
+  default_prompt: "Use $platforma-guidelines to plan and implement a Platforma backend app with correct project layout, CLI usage, and package integration examples."
