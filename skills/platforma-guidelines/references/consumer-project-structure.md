@@ -10,13 +10,10 @@ myapp/
 │   └── myapp/
 │       └── main.go
 ├── internal/
-│   ├── config/
-│   │   └── config.go
 │   ├── app/
 │   │   └── build.go
-│   ├── platforma/
-│   │   ├── database.go
-│   │   └── http.go
+│   ├── config/
+│   │   └── config.go
 │   ├── auth/
 │   │   ├── domain.go
 │   │   ├── service.go
@@ -58,7 +55,7 @@ Avoid shared cross-domain repository/service folders by default. Each domain liv
 
 - `cmd/myapp/main.go`
   - Parse config and startup context.
-  - Call `internal/app/build.Build()`.
+  - Call `app.Build(...)` from `myapp/internal/app`.
   - Execute `app.Run(ctx)`.
 - `internal/app/build.go`
   - Compose all domains into `application.Application`.
