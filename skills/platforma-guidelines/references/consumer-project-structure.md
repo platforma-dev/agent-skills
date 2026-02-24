@@ -10,41 +10,32 @@ myapp/
 │   └── myapp/
 │       └── main.go
 ├── internal/
-│   ├── config/
-│   │   └── config.go
 │   ├── app/
 │   │   └── build.go
-│   ├── platforma/
-│   │   ├── database.go
-│   │   └── http.go
-│   └── domains/
-│       ├── auth/
-│       │   ├── domain.go
-│       │   ├── service.go
-│       │   ├── repository.go
-│       │   ├── handlers.go
-│       │   ├── middleware.go
-│       │   └── migrations/
-│       │       └── 001_create_auth_tables.sql
-│       ├── users/
-│       │   ├── domain.go
-│       │   ├── service.go
-│       │   ├── repository.go
-│       │   ├── handlers.go
-│       │   └── migrations/
-│       │       └── 001_create_users_table.sql
-│       ├── jobs/
-│       │   ├── queue.go
-│       │   └── handlers.go
-│       └── scheduler/
-│           └── tasks.go
+│   ├── config/
+│   │   └── config.go
+│   ├── auth/
+│   │   ├── domain.go
+│   │   ├── service.go
+│   │   ├── repository.go
+│   │   ├── handlers.go
+│   │   ├── middleware.go
+│   │   └── migrations/
+│   │       └── 0001_create_auth_tables.sql
+│   └── users/
+│       ├── domain.go
+│       ├── service.go
+│       ├── repository.go
+│       ├── handlers.go
+│       └── migrations/
+│           └── 0001_create_users_table.sql
 ├── go.mod
 └── go.sum
 ```
 
 ## Domain-First Rule
 
-Treat each business domain as a vertical slice. Put everything that domain needs in one package:
+Treat each business domain as a vertical slice. Put everything that domain needs in one package directly under `internal/`:
 
 - `repository.go`: DB reads/writes for that domain.
 - `service.go`: business logic.
@@ -53,24 +44,18 @@ Treat each business domain as a vertical slice. Put everything that domain needs
 - `migrations/`: SQL migrations owned by this domain.
 - `domain.go`: domain wiring entrypoint used by app bootstrap.
 
-Avoid shared cross-domain repository/service folders by default.
+Avoid shared cross-domain repository/service folders by default. Each domain lives in its own `internal/<domain>/` package.
 
 ## File Responsibilities (Top Level)
 
 - `cmd/myapp/main.go`
   - Parse config and startup context.
-  - Call a single app builder.
+  - Call `app.Build(...)` from `myapp/internal/app`.
   - Execute `app.Run(ctx)`.
 - `internal/app/build.go`
   - Compose all domains into `application.Application`.
   - Register database, repositories/domains, and service runners.
   - Keep registration order explicit and centralized.
-- `internal/platforma/database.go`
-  - Construct `database.New(...)`.
-  - Provide shared DB bootstrap helpers.
-- `internal/platforma/http.go`
-  - Construct `httpserver.New(...)`.
-  - Register shared middleware and mount domain handlers.
 
 ## Build and Runtime Shape
 
@@ -81,6 +66,34 @@ Avoid shared cross-domain repository/service folders by default.
 5. Run migrations via `myapp migrate`.
 6. Start services via `myapp run`.
 
+## CLI Commands (Built-in)
+
+**Important:** Platforma's `Application.Run()` parses CLI arguments automatically. Do not implement command parsing in your code.
+
+The application supports these commands out of the box:
+
+- `myapp run` - Start all services
+- `myapp migrate` - Run database migrations and exit
+- `myapp --help` - Show usage
+
+Your `main()` should be simple: create the app, register components, and call `app.Run(ctx)`. No flag parsing, no switch statements.
+
+**Do NOT do this:**
+```go
+// ❌ Wrong - don't parse commands yourself
+if len(os.Args) > 1 && os.Args[1] == "migrate" {
+    db.Migrate(ctx)
+} else {
+    app.Run(ctx)
+}
+```
+
+**Do this instead:**
+```go
+// ✅ Correct - let platforma handle it
+app.Run(ctx)  // parses run/migrate/--help automatically
+```
+
 ## Domain Wiring Pattern
 
 Each domain should expose one constructor/wiring function that returns the pieces app bootstrap needs.
@@ -88,7 +101,7 @@ Each domain should expose one constructor/wiring function that returns the piece
 ```go
 type Domain struct {
     Name       string
-    Repository any
+    Repository *Repository
     Routes     http.Handler
 }
 
@@ -102,11 +115,15 @@ func New(db *sqlx.DB) *Domain {
         Routes:     h,
     }
 }
+
+func (d *Domain) GetRepository() any {
+    return d.Repository
+}
 ```
 
 In app bootstrap:
 
-1. Create domain via `domains/users.New(...)`.
+1. Create domain via `internal/users.New(...)`.
 2. Register repository/domain for migrations.
 3. Mount routes to HTTP server.
 4. Register services (`httpserver`, `queue`, `scheduler`, and custom runners).
@@ -118,3 +135,57 @@ In app bootstrap:
 - Keep registration/wiring in one place to avoid scattered order bugs.
 - Name services with stable identifiers (`api`, `queue`, `scheduler`) for readable logs.
 - Use `context.Context` end-to-end for graceful shutdown and cancellation.
+
+## Simple Application Example
+
+Here's a complete, straightforward app bootstrap pattern. No builder chains, no abstraction layers:
+
+```go
+// internal/app/build.go
+package app
+
+import (
+    "context"
+
+    "github.com/jmoiron/sqlx"
+    "github.com/platforma-dev/platforma/application"
+    "github.com/platforma-dev/platforma/database"
+    "github.com/platforma-dev/platforma/httpserver"
+
+    "myapp/internal/auth"
+    "myapp/internal/users"
+)
+
+func Build(ctx context.Context, cfg Config) *application.Application {
+    app := application.New()
+
+    // Database
+    db := database.New(cfg.DatabaseURL)
+    app.RegisterDatabase("main", db)
+
+    // Domains (they register their own repositories)
+    authDomain := auth.New(db.Connection())
+    usersDomain := users.New(db.Connection())
+
+    // Register domains
+    app.RegisterDomain("auth", "main" authDomain)
+    app.RegisterDomain("users", "main", usersDomain)
+
+    // HTTP server
+    api := httpserver.New(cfg.Port, cfg.Timeout)
+    api.Handle("/auth", authDomain.Handler)
+    api.HandleGroup("/users", usersDomain.HandlerGroup)
+    app.RegisterService("api", api)
+
+    return app
+}
+```
+
+**Key points:**
+- Linear code flow from top to bottom
+- Each step clearly labeled
+- No builder patterns or fluent chains
+- All registration happens in one file
+- Easy to read and debug
+
+That's it. Call `Build()` from main and you're done.
