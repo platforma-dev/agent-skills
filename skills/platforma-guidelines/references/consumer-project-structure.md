@@ -21,19 +21,14 @@ myapp/
 │   │   ├── handlers.go
 │   │   ├── middleware.go
 │   │   └── migrations/
-│   │       └── 001_create_auth_tables.sql
-│   ├── users/
-│   │   ├── domain.go
-│   │   ├── service.go
-│   │   ├── repository.go
-│   │   ├── handlers.go
-│   │   └── migrations/
-│   │       └── 001_create_users_table.sql
-│   ├── jobs/
-│   │   ├── queue.go
-│   │   └── handlers.go
-│   └── scheduler/
-│       └── tasks.go
+│   │       └── 0001_create_auth_tables.sql
+│   └── users/
+│       ├── domain.go
+│       ├── service.go
+│       ├── repository.go
+│       ├── handlers.go
+│       └── migrations/
+│           └── 0001_create_users_table.sql
 ├── go.mod
 └── go.sum
 ```
@@ -106,7 +101,7 @@ Each domain should expose one constructor/wiring function that returns the piece
 ```go
 type Domain struct {
     Name       string
-    Repository any
+    Repository *Repository
     Routes     http.Handler
 }
 
@@ -119,6 +114,10 @@ func New(db *sqlx.DB) *Domain {
         Repository: repo,
         Routes:     h,
     }
+}
+
+func (d *Domain) GetRepository() any {
+    return d.Repository
 }
 ```
 
@@ -152,12 +151,9 @@ import (
     "github.com/platforma-dev/platforma/application"
     "github.com/platforma-dev/platforma/database"
     "github.com/platforma-dev/platforma/httpserver"
-    "github.com/platforma-dev/platforma/queue"
-    "github.com/platforma-dev/platforma/scheduler"
 
     "myapp/internal/auth"
     "myapp/internal/users"
-    "myapp/internal/jobs"
 )
 
 func Build(ctx context.Context, cfg Config) *application.Application {
@@ -170,27 +166,16 @@ func Build(ctx context.Context, cfg Config) *application.Application {
     // Domains (they register their own repositories)
     authDomain := auth.New(db.Connection())
     usersDomain := users.New(db.Connection())
-    jobsDomain := jobs.New()
 
-    // Register repositories for migrations
-    app.RegisterRepository("main", "auth", authDomain)
-    app.RegisterRepository("main", "users", usersDomain)
+    // Register domains
+    app.RegisterDomain("auth", "main" authDomain)
+    app.RegisterDomain("users", "main", usersDomain)
 
     // HTTP server
     api := httpserver.New(cfg.Port, cfg.Timeout)
-    api.Handle("/auth", authDomain.Routes())
-    api.Handle("/users", usersDomain.Routes())
+    api.Handle("/auth", authDomain.Handler)
+    api.HandleGroup("/users", usersDomain.HandlerGroup)
     app.RegisterService("api", api)
-
-    // Queue
-    q := queue.New(cfg.QueueURL)
-    jobsDomain.RegisterHandlers(q)
-    app.RegisterService("queue", q)
-
-    // Scheduler
-    sched := scheduler.New()
-    jobsDomain.RegisterTasks(sched)
-    app.RegisterService("scheduler", sched)
 
     return app
 }
